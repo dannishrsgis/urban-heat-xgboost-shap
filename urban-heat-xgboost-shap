@@ -1,0 +1,102 @@
+# Step-by-step implementation of the modeling framework and explainable AI analysis using Python
+
+import pandas as pd
+import numpy as np
+import xgboost as xgb
+from sklearn.model_selection import train_test_split, cross_val_score, KFold
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import shap
+import matplotlib.pyplot as plt
+from pdpbox import pdp, info_plots
+
+# Step 1: Load the dataset
+# Assuming df is a pre-cleaned DataFrame with target 'LST' and features
+# df = pd.read_csv('delhi_LST_data.csv')  # Uncomment and modify as needed
+
+# Placeholder DataFrame structure (to be replaced with actual data loading)
+# df = pd.DataFrame(...)  # Already loaded
+
+# Step 2: Define features and target
+X = df.drop(columns=['LST'])
+y = df['LST']
+
+# Step 3: Normalize features using MinMaxScaler
+scaler = MinMaxScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Step 4: Train-test split
+X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+
+# Step 5: Configure and train XGBoost with 10-fold CV and early stopping
+xgb_model = xgb.XGBRegressor(
+    objective='reg:squarederror',
+    learning_rate=0.1,
+    n_estimators=100,
+    max_depth=6,
+    random_state=42
+)
+
+# Convert to DMatrix for early stopping
+eval_set = [(X_train, y_train), (X_test, y_test)]
+xgb_model.fit(X_train, y_train, eval_metric='rmse', eval_set=eval_set, early_stopping_rounds=10, verbose=False)
+
+# Step 6: Predict and evaluate model performance
+y_pred = xgb_model.predict(X_test)
+
+mae = mean_absolute_error(y_test, y_pred)
+mse = mean_squared_error(y_test, y_pred)
+rmse = np.sqrt(mse)
+r2 = r2_score(y_test, y_pred)
+
+print("MAE:", mae)
+print("MSE:", mse)
+print("RMSE:", rmse)
+print("R²:", r2)
+
+# Step 7: SHAP explainability
+explainer = shap.Explainer(xgb_model, X_train)
+shap_values = explainer(X_test)
+
+# Global SHAP summary (Beeswarm and bar plot)
+shap.summary_plot(shap_values, X_test, feature_names=X.columns)
+shap.summary_plot(shap_values, X_test, feature_names=X.columns, plot_type="bar")
+
+# Step 8: Local SHAP: Waterfall and Force plot for one instance
+instance_idx = 0
+shap.plots.waterfall(shap_values[instance_idx])
+shap.plots.force(shap_values[instance_idx])  # For notebook use
+
+# Step 9: Partial Dependence Plots (PDP)
+for feature in ['POPD', 'PLAND', 'ISP']:
+    pdp_dist = pdp.pdp_isolate(model=xgb_model, dataset=pd.DataFrame(X_scaled, columns=X.columns),
+                               model_features=X.columns.tolist(), feature=feature)
+    pdp.pdp_plot(pdp_dist, feature)
+    plt.show()
+
+# Step 10: SHAP interaction values
+interaction_values = shap.TreeExplainer(xgb_model).shap_interaction_values(X_test)
+
+# SHAP heatmap
+shap.plots.heatmap(shap_values)
+
+# Step 11: 3D PDP plots using Plotly (example for two features)
+import plotly.express as px
+from sklearn.inspection import partial_dependence
+
+features = [('BD', 'PLAND'), ('NTL', 'ISP')]
+for feat_pair in features:
+    pd_results = partial_dependence(xgb_model, X_train, features=[feat_pair], grid_resolution=50)
+    XX, YY = np.meshgrid(pd_results['values'][0], pd_results['values'][1])
+    Z = pd_results['average'][0].T
+
+    fig = px.surface(x=XX, y=YY, z=Z, labels={'x': feat_pair[0], 'y': feat_pair[1], 'z': 'LST'})
+    fig.update_layout(title=f'3D PDP for {feat_pair[0]} vs {feat_pair[1]}')
+    fig.show()
+
+# Step 12: Optional - save SHAP values for GIS mapping
+shap_df = pd.DataFrame(shap_values.values, columns=X.columns)
+shap_df['predicted_LST'] = y_pred
+shap_df.to_csv('shap_values_output.csv', index=False)  # Export for GIS visualization
+
+
